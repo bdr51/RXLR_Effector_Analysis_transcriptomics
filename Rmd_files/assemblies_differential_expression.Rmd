@@ -1,0 +1,592 @@
+---
+title: "assemblies_differential_expression"
+output: html_document
+date: "2025-02-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Differential analysis 
+```{r}
+#Installing necessary packages 
+install.packages("BiocManager")
+BiocManager::install(c("DESeq2", "tximport", "readr", "tximportData", "apeglm"))
+
+#Loading necessary libraries
+library(DESeq2)
+library(tximport)
+library(readr)
+library("tximportData")
+library(stringr)
+
+#Set the directory
+quant_dir = "/Users/breedrinkwater/Desktop/Phytopthora/processed_data/trial/salmon_script/quant_output"
+
+library(dplyr)
+#Set the sample as the data sheet 
+#samples <- data_sheet3 %>%
+  #select(Clone, Time, Set, Treatment)
+
+#Adding a column with the quantification data 
+#samples$run <- sprintf("%02d_mapped_trinity", 1:nrow(samples))  # Ensure this matches the folder names
+
+# Set row names
+#rownames(samples) <- samples$run
+
+runs <- sprintf("%02d_mapped_trinity", 1:36) 
+
+files <- file.path(quant_dir, runs, "quant.sf")
+names(files) <- runs
+# Print to check
+print(files)
+
+#read in the quantified salmon files 
+#files <- file.path(quant_dir, samples$run, "quant.sf")  # Remove "salmon/"
+
+#names(files) <- samples$run
+# Modify transcript IDs in the quantification files to remove the isoform suffixes
+library(readr)
+library(stringr)
+library(dplyr)
+
+files <- lapply(files, function(file) {
+  quant_data <- read_tsv(file)
+
+  # Ensure column name matches the actual column in quant.sf (likely "Name")
+  
+  if ("Name" %in% colnames(quant_data)) {
+    quant_data <- quant_data %>%
+      mutate(Name = str_remove(Name, "_i\\d+_\\d+$"))  # Remove extra numbering
+  }
+
+  # Write cleaned data back to file
+  write_tsv(quant_data, file)
+  
+  return(file)
+})
+
+```
+
+```{R}
+
+# Read in the tx2gene file
+tx2gene <- read_tsv("/Users/breedrinkwater/Desktop/Phytopthora/processed_data/trial/tx2gene.tsv", col_names = FALSE)
+
+
+
+# Rename the columns to "TXNAME" and "GENEID"
+colnames(tx2gene) <- c("TXNAME", "GENEID")
+
+# Clean transcript names in tx2gene to match quant.sf
+tx2gene <- tx2gene %>%
+  mutate(TXNAME = str_remove(TXNAME, "_i\\d+_\\d+$"))  # Removes suffix like _i1_1, _i2_3, etc.
+
+
+# Ensure "GENEID" is a factor
+tx2gene$GENEID <- factor(tx2gene$GENEID)
+ 
+# Convert list to character vector
+files <- unlist(files)  
+   
+##Using TXI import to import data from Salmon for raw transcripts  
+txi <- tximport(files, type="salmon", tx2gene=tx2gene)
+
+#Constructing samples file 
+samples <- read.csv("/Users/breedrinkwater/Desktop/data_sheet3.csv")  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#Construt a DESeqDataSet 
+library("DESeq2")
+
+
+ddsTxi <- DESeqDataSetFromTximport(txi, colData=samples, design = ~ Treatment + Time + Set + Clone)
+colData <- colData(ddsTxi)
+
+ddsTxi_Pluvialis <- ddsTxi[, ddsTxi$Treatment == "P. pluvialis"]
+
+dds_pluvialis$Treatment <- droplevels(dds_pluvialis$Treatment)
+
+
+
+coldata <- samples
+counts <- txi$counts
+
+design(ddsTxi_Pluvialis) <- ~ Treatment + Time + Set + Clone
+
+#Removing water sample 
+# Remove T0 samples
+ddsTxi_Pluvialis <- ddsTxi_Pluvialis[, ddsTxi_Pluvialis$Time != "T0"]
+
+# Remove H2O samples
+ddsTxi_Pluvialis <- ddsTxi_Pluvialis[, ddsTxi_Pluvialis$Treatment != "H2O"]
+
+# Recheck the factor levels
+table(ddsTxi_Pluvialis$Treatment)
+table(ddsTxi_Pluvialis$Time)
+
+
+
+##################Differential expression analysis 
+ddsTxi_Pluvialis <- DESeq(ddsTxi_Pluvialis)
+res <- results(dds)
+res
+
+############Log fold change for visualisation and ranking 
+
+plotCounts(dds, gene=which.min(res$padj), intgroup="Treatment")
+rownames(res)
+
+
+
+# because we are interested in treated vs untreated, we set 'coef=2'
+resNorm <- lfcShrink(dds, coef=2, type="normal")
+resAsh <- lfcShrink(dds, coef=2, type="ashr")
+resLFC <- lfcShrink(dds, coef="Treatment_P..pluvialis_vs_H2O", type="apeglm")
+
+library(DESeq2)
+install.packages("ashr")
+library(ashr)
+
+# Run DESeq2 analysis if not already done
+ddsTxi <- DESeq(ddsTxi)
+
+# Get results with ashr shrinkage
+resAsh <- lfcShrink(ddsTxi, coef="Treatment_P..pluvialis_vs_H2O", type="ashr")
+
+#par(mfrow=c(1,3), mar=c(5,5,3,2))
+#xlim <- c(1,1e5); ylim <- c(-3,3)
+#par(mfrow=c(1,1))  
+
+plotMA(resLFC, xlim=xlim, ylim=ylim, main="apeglm")
+```
+
+
+```{r}
+plotMA(resNorm, xlim=xlim, ylim=ylim, main="normal")
+```
+
+```{r}
+plotMA(resAsh, xlim=xlim, ylim=ylim, main="ashr")
+#idx <- identify(res$baseMean, res$log2FoldChange) ##won't work as I am working in an R markdown 
+
+#rownames(res)[idx]
+```
+
+```{r}
+plotCounts(dds, gene=which.min(res$padj), intgroup="Treatment")
+##Selects the gene with the most significant change in expression between the two groups. P. Pluvialis treatment displays numerous more counts. 
+
+```
+#plot counts 
+
+```{r}
+d <- plotCounts(dds, gene=which.min(res$padj), intgroup="Treatment", 
+                returnData=TRUE)
+
+library("ggplot2")
+
+ggplot(d, aes(x=Treatment, y=count)) + 
+  geom_point(position=position_jitter(w=0.1,h=0)) + 
+  scale_y_log10(breaks=c(25,100,400))
+
+                            
+```
+
+
+```{r}
+#More information can be called 
+mcols(res)$description
+
+
+```
+
+
+```{r}
+#Speed up and parallelisation thoughts 
+library("BiocParallel")
+register(MulticoreParam(4))
+
+#P values and adjusted P values 
+resOrdered <- res[order(res$pvalue),]
+summary(res)
+
+
+###Notes: There were 1811 genes with a positive log fold change = upregulated. 
+#Downregulated genes = 3 genes 
+#37% of genes have low read counts 
+```
+
+```{r}
+#How many adj p-values were less than 0.1? 
+sum(res$padj < 0.1, na.rm=TRUE)
+
+
+```
+
+
+```{r}
+#What about with an alpha of 0.5? 
+res05 <- results(dds, alpha=0.05)
+summary(res05)
+
+##Notes: 
+#1463 upregulated 
+#1 downregulated 
+```
+
+```{r}
+#How many adj p-values were less than 0.05? 
+sum(res05$padj < 0.05, na.rm=TRUE)
+
+#1464
+
+```
+
+
+
+
+```{r}
+########Indepdendent hupothesis weighting 
+# (unevaluated code chunk)
+BiocManager::install(c("IHW"))
+library(IHW)
+resIHW <- results(dds, filterFun=ihw)
+summary(resIHW)
+sum(resIHW$padj < 0.1, na.rm=TRUE)
+metadata(resIHW)$ihwResult
+####Cannot install packages with this version of R 
+```
+
+```{r}
+#######Exporting results as CSV files 
+write.csv(as.data.frame(resOrdered), 
+          file="Treatment_P..pluvialis_vs_H2O.csv")
+
+#Can also export using the subset function with valuies that meet the p value threshold 
+#resSig <- subset(resOrdered, padj < 0.1)
+#resSig
+
+```
+
+```{r}
+#######More than one factor influenciung the results 
+colData(dds)
+
+#create a copy of dds so we can rerun the analysis 
+ddsMF <- dds
+
+#Change the levels of type to only contain leters 
+colData$Clone <- as.factor(colData$Clone)
+colData$Time <- as.factor(colData$Time)
+colData$Treatment <- as.factor(colData$Treatment)
+colData$Set <- as.factor(colData$Set)
+colData$run <- as.factor(colData$run)
+
+#Removing special characters 
+levels(colData$Clone) <- gsub("[^a-zA-Z0-9]", "_", levels(colData$Clone))
+levels(colData$Treatment) <- gsub("[^a-zA-Z0-9]", "_", levels(colData$Treatment))
+levels(colData$run) <- gsub("[^a-zA-Z0-9]", "_", levels(colData$run))
+colData$Clone <- factor(colData$Clone)
+colData$Time <- factor(colData$Time)
+colData$Treatment <- factor(gsub("[^a-zA-Z0-9]", "_", colData$Treatment))
+colData$Set <- factor(colData$Set)
+colData$run <- factor(gsub("[^a-zA-Z0-9]", "_", colData$run))
+colData$Treatment <- factor(gsub("[^a-zA-Z0-9]", "_", as.character(colData$Treatment)))
+colData$Treatment <- factor(gsub("__", "_", colData$Treatment))  # Remove double underscores
+
+
+levels(colData$Clone)
+levels(colData$Time)
+levels(colData$Treatment)
+levels(colData$Set)
+levels(colData$run)
+
+str(colData)
+
+rownames(colData) <- as.character(colData$run)
+rownames(colData)
+
+
+
+#Changing counts to integer values so that DEseq accepts them. 
+counts <- round(counts)  # Ensure values are rounded
+storage.mode(counts) <- "integer"
+str(counts)
+
+colData <- DataFrame(
+  Clone = factor(colData$Clone),
+  Time = factor(colData$Time),
+  Set = factor(colData$Set),
+  Treatment = factor(colData$Treatment),
+  run = factor(colData$run)
+)
+
+str(colData)
+
+rownames(colData) <- colnames(counts)
+
+#Create ddsMF
+ddsMF <- DESeqDataSetFromMatrix(
+  countData = counts,
+  colData = colData,
+  design = ~ Clone + Time + Set + Treatment
+)
+
+#Rerun DEseq2 accounting for multiple factors 
+design(ddsMF) <- formula(~ Clone + Time + Set + Treatment)
+
+
+
+
+library(SummarizedExperiment)  # Ensure the required package is loaded
+colData <- DataFrame(colData)  # Convert from data.frame to DataFrame
+
+colData(ddsMF) <- colData
+
+design(ddsMF) <- formula(~ Clone + Time + Set + Treatment)
+
+ddsMF <- DESeq(ddsMF)
+
+resMF <- results(ddsMF)
+head(resMF)
+
+#1) Compare resistant vs susceptible clones 
+resMFClone <- results(ddsMF, contrast = c("Clone", "06_23", "41-24"))
+head(resMFClone)
+
+#2) Compare different time points 
+resMFTime <- results(ddsMF, contrast = c("Time", "T5", "T0"))
+head(resMFTime)
+
+#3)Compare different treatments 
+resMFTreatment <- results(ddsMF, contrast = c("Treatment", "P. pluvialis", "H2O"))
+head(resMFTreatment)
+
+
+
+
+
+```
+
+```{r}
+# Interactions plotting 
+
+# Create the combined 'group' factor
+ddsMF$group <- factor(paste0(ddsMF$Clone, ddsMF$Treatment))
+
+# Set the design formula to use the new factor
+design(ddsMF) <- ~ Clone + Treatment + Clone:Treatment
+ddsMF <- DESeq(ddsMF)
+
+
+# Check available results names
+resultsNames(ddsMF)
+
+resGroupContrast <- results(ddsMF, contrast = c("Treatment", "P. pluvialis", "H2O"))
+
+##Check if ddsMF is correctly formatted 
+# Clean up factor levels
+levels(colData(ddsMF)$Clone) <- gsub("[^A-Za-z0-9_.]", "_", levels(colData(ddsMF)$Clone))
+levels(colData(ddsMF)$Treatment) <- gsub("[^A-Za-z0-9_.]", "_", levels(colData(ddsMF)$Treatment))
+
+# Clean the Treatment levels by replacing the period with an underscore
+levels(colData(ddsMF)$Treatment) <- gsub("\\.", "_", levels(colData(ddsMF)$Treatment))
+
+# Reassign the design formula again
+design(ddsMF) <- ~ Clone + Treatment + Clone:Treatment
+
+# Rerun DESeq2
+ddsMF <- DESeq(ddsMF)
+ddsMF$Clone <- factor(ddsMF$Clone)
+ddsMF$Treatment <- factor(ddsMF$Treatment)
+ddsMF$group <- factor(ddsMF$group)
+
+ddsMF <- DESeqDataSetFromMatrix(countData = counts(ddsMF), 
+                                colData = colData(ddsMF), 
+                                design = ~ Clone + Treatment + Clone:Treatment)
+ddsMF <- DESeq(ddsMF)
+
+
+
+
+
+```
+
+
+```{r}
+# Effects of transformations on the variance 
+ntd <- normTransform(dds)
+BiocManager::install("vsn")
+
+library("vsn")
+meanSdPlot(assay(ntd))
+
+```
+
+```{r}
+#Extracting transformed values 
+vsd <- vst(dds, blind=FALSE)
+rld <- rlog(dds, blind=FALSE)
+head(assay(vsd), 3)
+meanSdPlot(assay(vsd))
+
+```
+
+```{r}
+meanSdPlot(assay(rld))
+
+```
+
+```{r}
+#Data assessment qualituyt by visualisation and clustering 
+
+#Heatmap 
+install.packages("pheatmap")
+library("pheatmap")
+select <- order(rowMeans(counts(dds,normalized=TRUE)),
+                decreasing=TRUE)[1:20]
+
+
+# Select the relevant columns from colData
+df <- as.data.frame(colData(dds)[, c("Clone", "Time", "Set", "Treatment")])
+
+# Set rownames to match the sample names (columns of assay data)
+#rownames(df) <- colnames(assay(ntd)[select,])
+
+# Plot the heatmap with multiple annotations
+pheatmap(assay(ntd)[select,], 
+         cluster_rows=FALSE, 
+         show_rownames=FALSE,
+         cluster_cols=FALSE, 
+         annotation_col=df) 
+
+
+
+
+```
+
+
+```{r}
+# Select top differentially expressed genes (for example, top 50 based on adjusted p-value)
+# Order results by adjusted p-value
+res_ordered <- res[order(res$padj, na.last=NA), ]
+top_genes <- rownames(res_ordered)[1:min(20, nrow(res_ordered))]  # Handle cases with <20 genes
+
+# Extract normalized counts & ensure it's a matrix
+norm_counts <- as.matrix(assay(dds)[top_genes, , drop=FALSE])
+
+# Ensure annotation column is correctly formatted
+annotation_col <- as.data.frame(colData(dds)[, c("Clone", "Treatment"), drop=FALSE])
+rownames(annotation_col) <- colnames(norm_counts)
+
+# Check that dimensions align
+if (nrow(norm_counts) > 1) {
+    pheatmap(norm_counts, cluster_rows=TRUE, cluster_cols=TRUE, annotation_col=annotation_col)
+} else {
+    print("Not enough significant genes to plot a heatmap.")
+}
+
+
+```
+
+
+
+
+```{r}
+plotPCA(vsd, intgroup = c("Clone", "Treatment"))
+
+```
+
+
+
+```{r}
+########Heat map
+pheatmap(norm_counts, cluster_rows = TRUE, cluster_cols = TRUE, annotation_col = annotation_col)
+##################PLOT WITH LOG TRANSFORMED COUNTS instead of normalised counts 
+###################Remove water from the analysis and maybe add in time points 
+
+##Red shows the upregulated genes 
+###Q) do you think it's weird that the genes are upregulated in both the water and non water conditions for clone 41-24??
+```
+
+```{r}
+##Interaction effect of multiple genes 
+library(ggplot2)
+
+gene_data <- plotCounts(ddsMF, gene="TRINITY_DN3077_c0_g1", intgroup=c("Clone", "Treatment"), returnData=TRUE)
+
+ # Log transform
+gene_data$log_count <- log2(gene_data$count + 1) 
+
+ggplot(gene_data, aes(x=Treatment, y=log_count, color=Clone, group=Clone)) +
+  geom_point(position=position_jitter(width=0.2), alpha=0.7) +
+  geom_line(stat="summary", fun="mean") +  # Connect means for interaction visualization
+  labs(title="Interaction Effect on Gene Expression", y="Log2(Normalized Counts +1)") +
+  theme_minimal()
+```
+
+
+```{R}
+##Barplots of normalised counts. 
+
+interesting_genes <- c("TRINITY_DN3077_c0_g1", "TRINITY_DN137_c0_g1", "TRINITY_DN429_c0_g1")  # Replace with actual gene names
+
+##make for loop 
+for (gene in interesting_genes) {
+  gene_data <- plotCounts(ddsMF, gene=gene, intgroup=c("Clone", "Treatment"), returnData=TRUE)
+  
+  p <- ggplot(gene_data, aes(x=interaction(Clone, Treatment), y=count, fill=Clone)) +
+    geom_boxplot() +
+    geom_jitter(width=0.2, color="black", size=1.5) +
+    theme_minimal() +
+    labs(title=paste("Expression of", gene), x="Clone & Treatment", y="Normalized Count") +
+    theme(axis.text.x = element_text(angle=45, hjust=1))
+  
+  print(p)  # print the plot
+}
+
+
+
+```
+
+```{R}
+# Loop through each gene
+
+# Loop through each gene
+for (gene in interesting_genes) {
+  gene_data <- plotCounts(ddsMF, gene=gene, intgroup=c("Clone", "Treatment"), returnData=TRUE)
+
+  # Log2 transform the counts (adding 1 to avoid log(0))
+  gene_data$log2_count <- log2(gene_data$count + 1)
+
+  # Create the plot
+  p <- ggplot(gene_data, aes(x=Treatment, y=log2_count, color=Clone, group=Clone)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.5) +  # Boxplot to show distribution
+    geom_jitter(width=0.2, size=1.5) +  # Jitter points for individual samples
+    stat_summary(fun=mean, geom="line", aes(group=Clone), size=1, linetype="solid") +  # Connect means with a line
+    theme_minimal() +
+    labs(title=paste("Log2 Expression of", gene), 
+         x="Condition (Treatment)", 
+         y="Log2(Normalized Count + 1)") +
+    theme(axis.text.x = element_text(angle=45, hjust=1))
+  
+  print(p)  # Ensure plots are displayed in a loop
+}
+
+
+```
+

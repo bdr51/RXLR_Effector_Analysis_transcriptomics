@@ -1,0 +1,750 @@
+---
+title: "build count table of protein hits"
+author: "Bree Drinkwater"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+# Load libraries
+```{r}
+#knitr::opts_knit$set(root.dir = "Users/breedrinkwater/Desktop/Phytopthora/processed_data/raw_reads_effectors/blast_results")
+#library(ggplot2)
+#install.packages("hexbin")
+#options(repos = c(CRAN = "https://cran.rstudio.com"))
+#tinytex::install_tinytex()
+```
+
+#You can insert a section here in bash to run diamond blastx
+```{bash}
+###Hash out these so they don't run again when knitting 
+#cd /Users/breedrinkwater/Desktop/Phytopthora/processed_data/raw_reads_effectors
+
+#sh reads_effectors.sh 
+
+```
+
+# read in files
+```{r}
+
+# Directory containing the blast result files
+results_dir <- "/Users/breedrinkwater/Desktop/Phytopthora/processed_data/raw_reads_effectors/blast_results"
+
+column_names <- c("Query_ID", "Subject_ID", "Identity", "Alignment_Length",
+                  "Mismatches", "Gap_Open", "Q_Start", "Q_End",
+                  "S_Start", "S_End", "E_Value", "Bit_Score")
+
+
+# list of all R1 files
+R1_files <- list.files(path = results_dir, pattern = "_R1_blast_results.txt", full.names = TRUE)
+
+library(dplyr)
+
+#Create an R1 and R2 filtered data object 
+
+R1_filtered_data = list()
+R2_filtered_data = list()
+
+
+
+# Loop 
+for (R1_file in R1_files) {
+  # corresponding R2 file
+  R2_file <- sub("_R1_", "_R2_", R1_file)
+  
+  #  if the R2 file exists
+  if (file.exists(R2_file)) {
+    message("Processing pair: ", R1_file, " and ", R2_file)
+    
+    # Reading in the R1 and R2 files
+R1 <- read.table(R1_file, header = FALSE, sep = "\t", col.names = column_names)
+
+R2 <- read.table(R2_file, header = FALSE, sep = "\t", col.names = column_names)
+
+      
+    
+    # Filtering the data 
+    filtered_R1 <- R1 %>%
+      filter(Alignment_Length >= 40, Identity >= 99) %>%
+      select(Query_ID, Subject_ID, Alignment_Length, Identity)
+    
+    filtered_R2 <- R2 %>%
+      filter(Alignment_Length >= 40, Identity >= 99) %>%
+      select(Query_ID, Subject_ID, Alignment_Length, Identity)
+    
+    # Writing filtered data to new files
+    filtered_R1_file <- sub("blast_results.txt", "filtered_table.txt", R1_file)
+    filtered_R2_file <- sub("blast_results.txt", "filtered_table.txt", R2_file)
+    
+    
+    
+    write.table(filtered_R1, filtered_R1_file, row.names = FALSE, sep = "\t")
+    write.table(filtered_R2, filtered_R2_file, row.names = FALSE, sep = "\t")
+    
+    R1_filtered_data[[filtered_R1_file]]=filtered_R1
+    R2_filtered_data[[filtered_R2_file]]=filtered_R2
+    
+    
+    
+    
+  } else {
+    warning("Matching R2 file for ", R1_file, " not found!")
+  }
+}
+
+
+
+
+
+#Create for loop for 
+merged_table=NULL
+
+for(i in c(1:length(R1_filtered_data))){
+
+  this_R1=R1_filtered_data[[i]]
+  this_R2=R2_filtered_data[[i]]
+
+#Bind these together 
+
+  bound_R1_R2= rbind(this_R1, this_R2)
+
+#Prevents both reads being counted twice 
+  unique_bound_R1_R2= unique(bound_R1_R2[,1:2])
+
+
+#Counts for effectors in dataset. add placeholders to deal with datasets that have 0 or 1 hit.
+
+  table_unique_bound_R1_R2= table(c(unique_bound_R1_R2[,2],"placeholder","placeholder2"))
+  uniq_table_df=data.frame(table_unique_bound_R1_R2, row.names=1)
+
+
+
+#Simplifying names
+  colnames(uniq_table_df)=gsub(".mapped.*","",gsub(".*/","",names(R1_filtered_data)[i]))
+
+  if(i==1){
+    merged_table=uniq_table_df
+  }else{
+    merged_table=merge(merged_table, uniq_table_df, by="row.names", all=TRUE)
+    row.names(merged_table)=as.character(merged_table$Row.names)
+    merged_table$Row.names<-NULL
+  }
+
+}
+
+# remove placeholder values
+merged_table=merged_table[grep("placeholder",row.names(merged_table),invert = TRUE),]
+
+write.table(merged_table, file = "/Users/breedrinkwater/Desktop/pluvialis_merged_table.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+
+write.csv(merged_table, file = "/Users/breedrinkwater/Desktop/pluvialis_merged_table.csv", row.names = TRUE)
+
+
+#Last thing, create another object that you keep adding columns so that when a new column is added it adds a zero to that column. 
+
+# Summary of tsble 
+summary(merged_table)
+
+# Replacing my NA values with 0 
+merged_table[is.na(merged_table)] <- 0
+
+
+
+#####################Top20 effectors 
+
+
+# Sum the counts for each effector (row-wise sum across all columns)
+effector_sums <- rowSums(merged_table, na.rm = TRUE)
+
+sorted_effectors <- sort(effector_sums, decreasing = TRUE)
+
+# top 20 effectors
+top_20_effectors <- head(sorted_effectors, 20)
+
+# rows for the top 20 effectors
+top_20_effectors_table <- merged_table[names(top_20_effectors), ]
+
+top_20_effectors_table
+
+library(ggplot2)
+library(tidyr)
+library(tibble)
+
+
+#Converting table into long format
+top_20_long <- top_20_effectors_table %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Effector_ID") %>%
+  pivot_longer(cols = -Effector_ID, names_to = "Sample", values_to = "Count")
+
+# Getting rid of NA
+top_20_long <- top_20_long[!is.na(top_20_long$Count), ]
+
+# Bar plot with  key 
+ggplot(top_20_long, aes(x = reorder(Effector_ID, -Count), y = Count, fill = Sample)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Effector Protein ID", y = "Count", title = "Top 20 Effectors secreted by Phytophthora pluvialis into host Pinus radiata") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, size = 8),  
+        legend.title = element_text(size = 8),  
+        legend.text = element_text(size = 6),    
+        legend.key.size = unit(0.3, "cm"))       
+
+
+#######
+
+
+
+```
+
+# Create a read maps
+```{r}
+read1_readMap=filtered_R1[,1:2]
+head(read1_readMap)
+read2_readMap=filtered_R2[,1:2]
+head(read2_readMap)
+```
+
+
+
+
+########## DEseq2 Differential expression analysis ##########
+```{r}
+#Quick start 
+#Load DEseq2 library 
+library(DESeq2)
+
+#Ensure the the merged table is integer values 
+merged_table <- as.matrix(merged_table)
+mode(merged_table) <- "integer" 
+
+
+#write.csv(data_sheet3, "/Users/breedrinkwater/Desktop/data_sheet3.csv", row.names = FALSE)
+data_sheet3 <- read.csv("/Users/breedrinkwater/Desktop/Phytopthora/processed_data/data_sheet3.csv")
+
+coldata <- data_sheet3
+
+
+
+#coldata$files <- files
+coldata$names <- coldata$run
+
+# Rename columns for clarity (modify based on actual metadata)
+colnames(coldata)[1] <- "sample"  # Ensure the first column is the sample name
+colnames(coldata) <- make.names(colnames(coldata))  # Fix column names with spaces
+
+# Keep only necessary columns
+coldata <- coldata[, c("sample", "Clone", "Time", "Set", "Treatment")]  
+
+
+
+
+# Ensure row names match merged_table column names
+#Wrownames(coldata) <- coldata$sample  # Set row names
+coldata$sample <- NULL  # Remove redundant sample column
+
+#Fix up names 
+colnames(merged_table) <- sub("^0+", "", colnames(merged_table))
+
+all(colnames(merged_table) %in% rownames(coldata))  # Should return TRUE
+```
+
+```{R}
+###Creating dds object 
+dds <- DESeqDataSetFromMatrix(
+  countData = merged_table,
+  colData = coldata,
+  design = ~ Set + Clone + Treatment + Time
+)
+
+
+#Solving sixe factor erros 
+#dds <- estimateSizeFactors(dds, type = "iterate")
+
+#Trouble shooting iterative size factor will not convenge 
+# Load necessary libraries
+library(DESeq2)
+
+# Check size factors before normalization
+cat("Checking initial size factors...\n")
+tryCatch({
+  print(sizeFactors(dds))
+}, error = function(e) cat("Size factors not yet estimated.\n"))
+
+# Check total library sizes
+cat("Checking library size distribution...\n")
+library_sizes <- colSums(counts(dds))
+print(library_sizes)
+
+# Identify potential low-quality samples (e.g., very low count libraries)
+low_quality_samples <- names(library_sizes[library_sizes < median(library_sizes) * 0.1])
+if (length(low_quality_samples) > 0) {
+  cat("Warning: Low-quality samples detected:", low_quality_samples, "\nConsider removing them.\n")
+}
+
+
+cat("Final size factors:\n")
+print(sizeFactors(dds))
+
+#Removing low quality samples 
+dds <- dds[, !(colnames(dds) %in% low_quality_samples)]
+
+dds <- dds[, colSums(counts(dds)) > 0]
+dds <- dds[rowSums(counts(dds)) > 0, ]
+#dds <- estimateSizeFactors(dds, type = "poscounts")
+
+#filtering out low expressed genes 
+keep <- rowSums(counts(dds) > 0) > 1  # Keep genes expressed in at least 2 samples
+dds <- dds[keep,]
+
+dds <- estimateSizeFactors(dds, type = "poscounts")  # Uses only positive counts
+
+
+
+
+#Run DEseq
+dds_effectors <- DESeq(dds)
+
+
+resultsNames(dds_effectors) # lists the coefficients
+res_effectors <- results(dds_effectors, name = "Treatment_P..pluvialis_vs_H2O")
+
+# or to shrink log fold changes association with condition:
+res_effectors_skrinkage <- lfcShrink(dds_effectors, coef="Treatment_P..pluvialis_vs_H2O", type="apeglm")
+
+res_effectors_skrinkage
+
+write.table(res_effectors_skrinkage, file = "/Users/breedrinkwater/Desktop/effectors_results_table.txt", sep = "\t", row.names = TRUE, quote = FALSE)
+write.csv(res_effectors_skrinkage, file = "/Users/breedrinkwater/Desktop/effectors_results_table.csv", sep = "\t", row.names = TRUE, quote = FALSE)
+
+
+df <- read.csv("/Users/breedrinkwater/Desktop/effectors_results_table.csv", header = TRUE)  # Read the CSV file
+colnames(df)[1] <- "Effector"  # Rename the first column
+write.csv(df, "/Users/breedrinkwater/Desktop/effectors_results_table_final.csv", row.names = FALSE)  # Save the updated file
+
+
+```
+####Filtering and plotting 
+```{R}
+#filter out results for just padjusted values '
+res_filtered <- res_effectors_skrinkage[res_effectors_skrinkage$padj < 0.05, ]
+
+#create a table with log fold chnage and padj values 
+log2fc_table <- data.frame(
+  Gene = rownames(res_filtered),
+  log2FoldChange = res_filtered$log2FoldChange,
+  padj = res_filtered$padj
+)
+print(log2fc_table)
+###filters out too many 
+
+
+##Volcano plot 
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+    install.packages("BiocManager", repos = "https://cloud.r-project.org")
+}
+
+BiocManager::install("EnhancedVolcano", force = TRUE)
+library(EnhancedVolcano)
+
+EnhancedVolcano(res_effectors_skrinkage,
+    lab = rownames(res_effectors_skrinkage),
+    x = 'log2FoldChange',
+    y = 'pvalue',
+    title = 'Volcano Plot of DEGs',
+    pCutoff = 0.05,  # Adjust if needed
+    FCcutoff = 1,
+    pointSize = 3.0,
+    labSize = 4.0)
+```
+
+```{R}
+
+####Plotting unshrunk results 
+EnhancedVolcano(res_effectors, lab = rownames(res_effectors),
+                x = 'log2FoldChange', y = 'pvalue')
+
+
+```
+
+```{R}
+coefficients <- resultsNames(dds_effectors)  # Get valid coefficient names
+
+for (coef in coefficients) {
+  
+  res <- results(dds_effectors, name = coef)
+  
+  # Volcano plot for each coefficient
+  p <- EnhancedVolcano(res,
+                       lab = rownames(res),
+                       x = 'log2FoldChange',
+                       y = 'padj',
+                       title = paste("Volcano Plot of DEGs:", coef),
+                       pCutoff = 0.05,   
+                       FCcutoff = 1,    
+                       pointSize = 3.0,
+                       labSize = 4.0)
+  
+  print(p)
+}
+
+
+
+
+```
+
+```{R}
+# --------------------------------------------------
+# Data Filtering: Remove H₂O Control
+# --------------------------------------------------
+
+dds_pluvialis <- dds[, dds$Treatment == "P. pluvialis"]
+
+dds_pluvialis$Treatment <- droplevels(dds_pluvialis$Treatment)  # Here I am dropping unused factor levels
+
+#Explicitly define
+coldata$Clone <- factor(coldata$Clone)
+coldata$Set <- factor(coldata$Set)
+
+ 
+
+# --------------------------------------------------
+# Differential Expression Analysis by Time Point
+# --------------------------------------------------
+dds_pluvialis$Time <- factor(dds_pluvialis$Time)  # Ensure it's a factor
+
+design(dds_pluvialis) <- ~ Time + Set + Clone
+
+
+dds_pluvialis=DESeq(dds_pluvialis)
+
+
+# Check the coefficients for the new design in dds_pluvialis
+resultsNames(dds_pluvialis)  # Lists the coefficients in your model
+
+# Example: Assuming you want to check the log fold changes for Clone or Set effects
+# Here, I assume you want to compare Clone levels (adjust according to your design)
+res_pluvialis <- results(dds_pluvialis, name = "Clone_41.24_vs_06_23")
+ # Modify this according to your actual contrasts
+
+# To apply shrinkage for the log fold changes:
+# Example with the 'apeglm' method for shrinkage
+res_pluvialis_shrinkage <- lfcShrink(dds_pluvialis, coef = "Clone_41.24_vs_06_23", type = "apeglm")
+ # Modify coef accordingly
+
+# View the results with shrinkage
+res_pluvialis_shrinkage
+
+# Write results to a table
+write.table(res_pluvialis_shrinkage, file = "/Users/breedrinkwater/Desktop/pluvialis_results_table.txt", sep = "\t", row.names = TRUE, quote = FALSE)
+write.csv(res_pluvialis_shrinkage, file = "/Users/breedrinkwater/Desktop/pluvialis_results_table.csv", sep = "\t", row.names = TRUE, quote = FALSE)
+
+# Read the CSV file, modify column names, and save the updated version
+df <- read.csv("/Users/breedrinkwater/Desktop/pluvialis_results_table.csv", header = TRUE)  # Read the CSV file
+colnames(df)[1] <- "Effector"  # Rename the first column (you can rename it to anything meaningful)
+write.csv(df, "/Users/breedrinkwater/Desktop/pluvialis_results_table_final.csv", row.names = FALSE)  # Save the updated file
+
+
+```
+
+```{R}
+# Get valid coefficient names for dds_pluvialis
+coefficients <- resultsNames(dds_pluvialis)  
+
+desktop_path="/Users/breedrinkwater/Desktop/"
+# Loop through each coefficient and create a volcano plot
+for (coef in coefficients) {
+  
+  res <- results(dds_pluvialis, name = coef)
+  
+  # Volcano plot for each coefficient
+  p <- EnhancedVolcano(res,
+                       lab = rownames(res),
+                       x = 'log2FoldChange',
+                       y = 'padj',
+                       title = paste("Volcano Plot of DEGs:", coef),
+                       pCutoff = 0.05,   # Adjust p-value cutoff as needed
+                       FCcutoff = 1,     # Adjust fold change cutoff as needed
+                       pointSize = 3.0,
+                       labSize = 4.0)
+    # Save the plot
+  filename <- paste0(desktop_path, "VolcanoPlot_", coef, ".png")
+  ggsave(filename, plot = p, width = 8, height = 6, dpi = 300)
+  print(p)
+}
+```
+```{R} 
+# Get the valid coefficient names for dds_pluvialis
+coefficients <- resultsNames(dds_pluvialis)  
+
+# Focus on Clone comparison
+clone_coef <- "Clone_41.24_vs_06_23"
+
+# Create a volcano plot for the Clone comparison
+res <- results(dds_pluvialis, name = clone_coef)
+
+# Apply thresholds to identify upregulated and downregulated genes
+upregulated <- rownames(res)[which(res$log2FoldChange > 1 & res$padj < 0.05)]
+downregulated <- rownames(res)[which(res$log2FoldChange < -1 & res$padj < 0.05)]
+
+# Create the volcano plot
+library(EnhancedVolcano)
+p <- EnhancedVolcano(res,
+                     lab = rownames(res),
+                     x = 'log2FoldChange',
+                     y = 'padj',
+                     title = paste("Volcano Plot of DEGs for", clone_coef),
+                     pCutoff = 0.05,   # Adjust p-value cutoff as needed
+                     FCcutoff = 1,     # Adjust fold change cutoff as needed
+                     pointSize = 3.0,
+                     labSize = 4.0)
+
+# Print volcano plot
+print(p)
+
+
+####Tables of the significantly upregulated vs downregulated genes in the different clones
+
+# Upregulated genes
+upregulated_table <- res[upregulated, c("log2FoldChange", "padj")]
+upregulated_table$Gene <- rownames(upregulated_table)
+
+# Downregulated genes
+downregulated_table <- res[downregulated, c("log2FoldChange", "padj")]
+downregulated_table$Gene <- rownames(downregulated_table)
+
+# Print the tables
+cat("Upregulated genes:\n")
+print(upregulated_table)
+
+cat("\nDownregulated genes:\n")
+print(downregulated_table)
+
+
+# Define the file paths for saving the tables
+upregulated_file <- "/Users/breedrinkwater/Desktop/upregulated_genes.csv"
+downregulated_file <- "/Users/breedrinkwater/Desktop/downregulated_genes.csv"
+
+# Save the upregulated and downregulated tables as CSV files
+write.csv(upregulated_table, upregulated_file, row.names = FALSE)
+write.csv(downregulated_table, downregulated_file, row.names = FALSE)
+
+
+
+
+```
+
+
+
+```{R}
+#How many effectors from the original data base have been transcribed?
+dim(dds_effectors)
+
+table(colData(dds_effectors)$Clone)
+
+summary(rowSums(counts(dds_effectors)))
+
+# Replace the Clone names
+colData(dds_effectors)$Clone <- gsub("06_23", "06", colData(dds_effectors)$Clone)
+colData(dds_effectors)$Clone <- gsub("41-24", "41", colData(dds_effectors)$Clone)
+
+# Check the updated values
+table(colData(dds_effectors)$Clone)
+
+# Transcribed in each clone
+clone06_samples <- colData(dds_effectors)$Clone == "06"
+clone41_samples <- colData(dds_effectors)$Clone == "41"
+
+# Transcribed in Clone 06
+transcribed_06 <- rowSums(counts(dds_effectors)[, clone06_samples]) > 0
+# Transcribed in Clone 41
+transcribed_41 <- rowSums(counts(dds_effectors)[, clone41_samples]) > 0
+
+# Proportions
+#prop_06 <- sum(transcribed_06) / total_effectors
+#prop_41 <- sum(transcribed_41) / total_effectors
+
+# Display results
+#cat("Proportion transcribed in Clone 06:", prop_06, "\n")
+#cat("Proportion transcribed in Clone 41:", prop_41, "\n")
+
+##these are the proportion of total transcribed proteins 
+
+# Assume the effector data has been properly loaded and DESeq2 has been run
+# Determine how many effectors were transcribed (non-zero in at least one sample)
+
+# Step 1: Check which effectors were transcribed (i.e., have counts > 0 in any sample)
+transcribed_effectors <- rowSums(counts(dds_effectors) > 0) > 0
+
+# Step 2: Calculate the number of transcribed effectors
+num_transcribed_effectors <- sum(transcribed_effectors)
+
+# Step 3: Output the result
+cat("Number of effectors transcribed out of the 211 in the database: ", num_transcribed_effectors, "\n")
+
+##total transcribed were 117
+```
+```{R}
+# Re-load DESeq2 if needed
+library(DESeq2)
+
+# Make sure 'Clone' and 'Time' are treated as factors and set reference levels
+dds$Clone <- relevel(factor(dds$Clone), ref = "06_23")   # Use Clone 41 as baseline
+dds$Time <- relevel(factor(dds$Time), ref = "T0")      # Use T0 as baseline
+
+levels(factor(dds$Clone))
+table(dds$Clone, dds$Time)
+table(dds$Set, dds$Clone, dds$Time)
+# Turns out clone 41 does not have data for time point 1 
+#comparing T3 and T5
+# Subset the data to include only T3 and T5
+dds_subset <- dds[dds$Time %in% c("T3", "T5"), ]
+
+# Relevel 'Clone' if needed to set a baseline
+dds_subset$Clone <- relevel(dds_subset$Clone, ref = "06_23")  # Use "41-24" as baseline
+
+# Set up the design formula to include only Clone and Time (no interaction needed)
+design(dds_subset) <- ~ Set + Clone + Time
+
+# Run DESeq on the subsetted data
+dds_subset <- DESeq(dds_subset)
+
+# Check the results for the contrast of interest (Clone at T3 vs T5)
+results(dds_subset, contrast = c("Time", "T3", "T5"))  # Compare T3 and T5 for each clone
+
+# If you'd like to compare clones at specific time points, you can also do:
+res_clone=results(dds_subset, contrast = c("Clone", "41-24", "06_23"))  # Compare the two clones at the same time point
+
+
+
+
+
+
+```
+
+```{R}
+# Set up the time points you want to plot
+time_points <- c("T3", "T5")
+
+# For each time point, run the volcano plot
+for (time in time_points) {
+  # Adjust the contrast name for Time comparisons
+  coef <- paste0("Time_", time, "_vs_T0")
+  
+  # Ensure the contrast exists in your results
+  if(coef %in% resultsNames(dds_subset)) {
+    # Get the DESeq2 results for the specified contrast
+    res <- results(dds_subset, name = coef)
+    
+    # Volcano plot for each time point
+    p <- EnhancedVolcano(res,
+                         lab = rownames(res),
+                         x = 'log2FoldChange',
+                         y = 'padj',
+                         title = paste("Volcano Plot:  Clone (06) vs  Clone (41)  at Time", time),
+                         pCutoff = 0.05,  # Adjust as necessary
+                         FCcutoff = 1,    # Adjust as necessary
+                         pointSize = 3.0,
+                         labSize = 4.0)
+    
+    # Print the plot
+    print(p)
+  } else {
+    cat("Contrast not found for: ", coef, "\n")
+  }
+}
+
+
+```
+
+```{R}
+
+for (time in c("T0", "T1", "T3", "T5")) {
+  # Subset data by time point
+  dds_time <- dds[dds$Time == time, ]
+  dds_time$Clone <- relevel(droplevels(dds_time$Clone), ref = "06_23")
+  dds_time$Set <- droplevels(dds_time$Set)
+  design(dds_time) <- ~ Set + Clone
+  dds_time <- DESeq(dds_time)
+
+  # Get results for clone comparison
+  res <- results(dds_time, contrast = c("Clone", "41-24", "06_23"))
+
+  # Volcano plot
+  p <- EnhancedVolcano(res,
+                       lab = rownames(res),
+                       x = 'log2FoldChange',
+                       y = 'padj',
+                       title = paste("Clone 41 vs 6 at", time),
+                       subtitle = "Positive log2FC = Up in Clone 41",
+                       pCutoff = 0.05,
+                       FCcutoff = 1)
+  print(p)
+}
+```
+
+```{R}
+
+# Create lists to store up- and down-regulated genes at each time point
+up_genes <- list()
+down_genes <- list()
+
+for (time in c("T0", "T1", "T3", "T5")) {
+  # Subset data by time point
+  dds_time <- dds[dds$Time == time, ]
+  dds_time$Clone <- relevel(droplevels(dds_time$Clone), ref = "06_23")
+  dds_time$Set <- droplevels(dds_time$Set)
+  design(dds_time) <- ~ Set + Clone
+  dds_time <- DESeq(dds_time)
+
+  # Get results for clone comparison
+  res <- results(dds_time, contrast = c("Clone", "41-24", "06_23"))
+
+  # Filter for significantly differentially expressed genes
+  sig_res <- res[which(res$padj < 0.05 & !is.na(res$padj)), ]
+
+  # Upregulated in Clone 41
+  up_genes[[time]] <- rownames(sig_res[sig_res$log2FoldChange > 1, ])
+
+  # Downregulated in Clone 41
+  down_genes[[time]] <- rownames(sig_res[sig_res$log2FoldChange < -1, ])
+
+  # Volcano plot
+  p <- EnhancedVolcano(res,
+                       lab = rep('', nrow(res)),  # no labels
+                       x = 'log2FoldChange',
+                       y = 'padj',
+                       title = paste("Clone 41 vs 6 at", time),
+                       subtitle = "Positive log2FC = Up in Clone 41",
+                       pCutoff = 0.05,
+                       FCcutoff = 1)
+  print(p)
+}
+
+
+
+```
+
+```{R}
+# Set the base path to your Desktop
+desktop_path <- "~/Desktop"
+
+# Save upregulated genes
+for (time in names(up_genes)) {
+  up_file <- file.path(desktop_path, paste0("upregulated_genes_", time, ".csv"))
+  write.csv(data.frame(Gene = up_genes[[time]]),
+            file = up_file,
+            row.names = FALSE)
+}
+
+# Save downregulated genes
+for (time in names(down_genes)) {
+  down_file <- file.path(desktop_path, paste0("downregulated_genes_", time, ".csv"))
+  write.csv(data.frame(Gene = down_genes[[time]]),
+            file = down_file,
+            row.names = FALSE)
+}
+```
